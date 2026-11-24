@@ -29,3 +29,8 @@ bash scripts/smoke-android.sh android/app/build/outputs/apk/release/app-release.
 
 - Never commit MFi material (`*.pk8`, `*.p7b`), `iap2loc.json`, or signing keys (`*.jks`, `*.keystore`). Tests generate throwaway keys.
 - Android release signing only via the `IAP2LOC_KEYSTORE*` environment variables / CI secrets.
+- The Android build never packages an identity. `app/build.gradle.kts` reads no asset directory for it, and
+  `android.yml` fails when a built APK contains `identity.pk8`, `certificate.p7b` or `offline-mfi/`.
+  A distribution build that ships an identity is produced from the private repository, where the material is
+  wrapped in its own container and bound to the device; a plaintext pk8 under `assets/` is not an option.
+  `app/.../platform/ProvisionedIdentity.kt` is the only seam for such a build and returns null here.

@@ -66,6 +66,9 @@ class ImportedIdentityTest {
         return Material(keys, chain, subject)
     }
 
+    private fun provisioned(material: Material?): ProvisionedIdentity? =
+        material?.let { ProvisionedIdentity(it.bytes, "APK 内置的 MFi 身份", null) }
+
     private fun assertUses(identity: ImportedIdentity, expected: Material, explicitDirectory: String? = null) {
         val signer = assertNotNull(identity.resolve(explicitDirectory).signer)
         assertContentEquals(expected.certificate, signer.certificate)
@@ -88,7 +91,7 @@ class ImportedIdentityTest {
                 val label = "bundle=$hasBundle, imported files=$files"
                 val directory = temporary.newFolder()
                 imported.write(directory, key = (files and 1) != 0, certificate = (files and 2) != 0)
-                val identity = ImportedIdentity(directory) { if (hasBundle) bundled.bytes else null }
+                val identity = ImportedIdentity(directory, provisioned(if (hasBundle) bundled else null))
                 val expected = if (files == 3) imported else if (hasBundle) bundled else null
                 val missing = when (files) {
                     1 -> MfiSigner.CERTIFICATE_FILE
@@ -129,7 +132,7 @@ class ImportedIdentityTest {
         val bundled = material("Bundled")
         for (hasBundle in listOf(false, true)) {
             val directory = temporary.newFolder()
-            val identity = ImportedIdentity(directory) { if (hasBundle) bundled.bytes else null }
+            val identity = ImportedIdentity(directory, provisioned(if (hasBundle) bundled else null))
             imported.write(directory, key = false)
             assertEquals(MfiSigner.KEY_FILE, identity.missingImportedFile)
             if (hasBundle) assertUses(identity, bundled) else assertNull(identity.resolve(null).signer)
@@ -164,7 +167,7 @@ class ImportedIdentityTest {
         val explicitDirectory = temporary.newFolder()
         imported.write(directory)
         explicit.write(explicitDirectory)
-        val identity = ImportedIdentity(directory) { bundled.bytes }
+        val identity = ImportedIdentity(directory, provisioned(bundled))
         assertUses(identity, explicit, explicitDirectory.absolutePath)
         assertEquals("文件 ${explicitDirectory.absolutePath}", identity.resolve(explicitDirectory.absolutePath).description)
 
@@ -179,7 +182,7 @@ class ImportedIdentityTest {
         val directory = temporary.newFolder()
         imported.write(directory)
         File(directory, MfiSigner.KEY_FILE).writeBytes(byteArrayOf(1, 2, 3))
-        val identity = ImportedIdentity(directory) { error("A complete imported pair must not fall back") }
+        val identity = ImportedIdentity(directory, provisioned(material("Bundled")))
 
         assertTrue(identity.isPresent)
         assertFalse(identity.usingBundled)
@@ -194,7 +197,7 @@ class ImportedIdentityTest {
         val directory = temporary.newFolder()
         imported.write(directory)
         File(directory, MfiSigner.CERTIFICATE_FILE).writeBytes(byteArrayOf(1, 2, 3))
-        val identity = ImportedIdentity(directory) { error("A complete imported pair must not fall back") }
+        val identity = ImportedIdentity(directory, provisioned(material("Bundled")))
         assertFalse(identity.usingBundled)
         assertTrue(assertNotNull(identity.report()).isFailure)
     }

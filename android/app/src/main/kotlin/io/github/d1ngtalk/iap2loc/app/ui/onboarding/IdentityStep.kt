@@ -95,7 +95,7 @@ fun IdentityDetails() {
     }
 
     SectionCard("MFi 身份") {
-        if (identity.usingBundled) Text("当前来源：APK 内置")
+        if (identity.usingBundled) Text("当前来源：${identity.provisionedDescription ?: "APK 内置"}")
         when {
             report == null -> StatusRow(Check.WARN, "尚未导入", "选择 identity.pk8 和 certificate.p7b 两个文件。")
             report.isFailure -> StatusRow(Check.FAILED, "文件无法使用", report.exceptionOrNull()?.message)

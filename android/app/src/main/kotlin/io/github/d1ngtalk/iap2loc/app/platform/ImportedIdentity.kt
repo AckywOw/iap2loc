@@ -18,15 +18,15 @@ import java.util.zip.ZipInputStream
 
 /**
  * MFi material imported during onboarding, kept in app-private storage (excluded from backups).
- * A blank identity directory uses imported files first, then optional release-bundled assets.
+ * A blank identity directory uses imported files first, then whatever a distribution build
+ * provisioned through [ProvisionedIdentity]; the public sources provision nothing.
  */
 class ImportedIdentity internal constructor(
     val directory: File,
-    loadBundledMaterial: () -> Pair<ByteArray, ByteArray>?,
+    private val provisioned: ProvisionedIdentity?,
 ) : IdentityProvider {
-    constructor(context: Context) : this(File(context.filesDir, "identity"), bundledLoader(context))
+    constructor(context: Context) : this(File(context.filesDir, "identity"), ProvisionedIdentity.load(context))
 
-    private val bundledMaterial: Pair<ByteArray, ByteArray>? by lazy(loadBundledMaterial)
     private val keyFile get() = File(directory, MfiSigner.KEY_FILE)
     private val certificateFile get() = File(directory, MfiSigner.CERTIFICATE_FILE)
 
@@ -38,8 +38,11 @@ class ImportedIdentity internal constructor(
             certificateFile.isFile && !keyFile.isFile -> MfiSigner.KEY_FILE
             else -> null
         }
-    val usingBundled: Boolean get() = !hasCompleteImportedIdentity && bundledMaterial != null
+    val usingBundled: Boolean get() = !hasCompleteImportedIdentity && provisioned?.material != null
     val isPresent: Boolean get() = hasCompleteImportedIdentity || usingBundled
+
+    /** How provisioned material describes itself; null when the build ships none. */
+    val provisionedDescription: String? get() = provisioned?.description
 
     override val name = "imported"
 
@@ -49,23 +52,26 @@ class ImportedIdentity internal constructor(
                 return "自定义 MFi 身份尚未完整导入，还需要 $missing。" +
                     if (usingBundled) "补齐前继续使用 APK 内置身份。" else "当前仍可连接和识别，但认证不会通过。"
             }
-            return if (isPresent) null else
-                "尚未导入 MFi 身份（identity.pk8 与 certificate.p7b）：可以连接和识别，但认证不会通过，iPhone 不会采用这里发送的定位。" +
+            if (isPresent) return null
+            provisioned?.warning?.let { return it }
+            return "尚未导入 MFi 身份（identity.pk8 与 certificate.p7b）：可以连接和识别，但认证不会通过，iPhone 不会采用这里发送的定位。" +
                 "请在右上角菜单 →「新手引导」中导入。"
         }
 
     override fun resolve(directory: String?): ResolvedIdentity = when {
         !directory.isNullOrBlank() -> File(directory).let { ResolvedIdentity(MfiSigner.load(it), "文件 ${it.absolutePath}") }
         hasCompleteImportedIdentity -> ResolvedIdentity(MfiSigner.load(this.directory), "已导入的 MFi 身份")
-        else -> bundledMaterial?.let { (key, certificate) ->
-            ResolvedIdentity(MfiSigner.fromMaterial(key, certificate), "APK 内置的 MFi 身份")
+        else -> provisioned?.let { source ->
+            source.material?.let { (key, certificate) ->
+                ResolvedIdentity(MfiSigner.fromMaterial(key, certificate), source.description)
+            }
         } ?: ResolvedIdentity(null, "无")
     }
 
     /** The inspect-identity summary, or the reason the files cannot be used. */
     fun report(): Result<IdentityReport>? = when {
         hasCompleteImportedIdentity -> runCatching { IdentityInspector.inspect(keyFile.readBytes(), certificateFile.readBytes()) }
-        else -> bundledMaterial?.let { (key, certificate) -> runCatching { IdentityInspector.inspect(key, certificate) } }
+        else -> provisioned?.material?.let { (key, certificate) -> runCatching { IdentityInspector.inspect(key, certificate) } }
     }
 
     fun delete() {
@@ -131,19 +137,6 @@ class ImportedIdentity internal constructor(
 
     private companion object {
         const val MAX_FILE = 1 shl 20
-
-        fun bundledLoader(context: Context): () -> Pair<ByteArray, ByteArray>? {
-            val assets = context.applicationContext.assets
-            return {
-                val files = assets.list("offline-mfi").orEmpty()
-                if (MfiSigner.KEY_FILE in files && MfiSigner.CERTIFICATE_FILE in files) {
-                    assets.open("offline-mfi/${MfiSigner.KEY_FILE}").use { it.readBytes() } to
-                        assets.open("offline-mfi/${MfiSigner.CERTIFICATE_FILE}").use { it.readBytes() }
-                } else {
-                    null
-                }
-            }
-        }
 
         fun isZip(bytes: ByteArray) = bytes.size > 4 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte() &&
             bytes[2].toInt() == 3 && bytes[3].toInt() == 4

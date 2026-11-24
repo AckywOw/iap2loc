@@ -6,7 +6,8 @@
 连接 iPhone、MFi 认证、单点 / 路径模式、GPX 导入、收藏、随机化、多设备、TCP 传输、控制台日志等桌面版的全部功能都在手机上完成，不需要电脑。
 
 > [!IMPORTANT]
-> 需要**合法取得**的 MFi 配件身份（`identity.pk8` + `certificate.p7b`）。普通版需自行导入；内置身份版由发布者在 CI 打包时注入，无需另行导入；
+> 需要**合法取得**的 MFi 配件身份（`identity.pk8` + `certificate.p7b`），公开版只能在 App 内自行导入。
+> 本仓库的源码与 CI **不会**打包任何身份材料：APK 里没有私钥，也没有证书。
 > 不保证 iOS 一定采用配件定位；iOS 26 及以上需要按说明[刷新定位缓存](README.md#在设备上切换定位源)。
 
 ## 下载与要求
@@ -16,7 +17,7 @@
 | 安装包 | [Releases](https://github.com/D1ngtalk/iap2loc/releases) 中的 `iap2loc-android.apk`（约 1.5 MB） |
 | 安卓手机 | Android 8.0 及以上，有经典蓝牙 |
 | iPhone | iOS 12 – 27 |
-| MFi 身份 | 普通版需导入 `identity.pk8`（PKCS#8 DER 格式 P-256 私钥）与 `certificate.p7b`（证书链）；内置身份版无需导入 |
+| MFi 身份 | 需导入 `identity.pk8`（PKCS#8 DER 格式 P-256 私钥）与 `certificate.p7b`（证书链） |
 
 安装时如果系统提示「未知来源」，在提示里允许本次安装即可。只从你信任的来源下载 APK，并可用同一 Release 中的 `iap2loc-android.apk.sha256` 校验。
 
@@ -27,7 +28,7 @@
 1. **欢迎**：需要准备什么、工作原理和使用须知。
 2. **权限**：「附近的设备」（蓝牙）与蓝牙开关是必需的；通知推荐打开；位置用于把控制台的默认位置设为手机当前位置，以及「当前位置」按钮，可以不给（默认位置则为上海人民广场附近）。Android 11 及以下用「位置」权限代替「附近的设备」来搜索蓝牙。
 3. **后台运行**：关闭电池优化，并按你的手机品牌（小米、华为 / 荣耀、OPPO / realme / 一加、vivo / iQOO、三星等）给出放行后台的具体路径。
-4. **MFi 身份**：普通版选择 `identity.pk8` 和 `certificate.p7b`（也可以选包含它们的 `.zip`，支持 PEM 格式私钥）；内置身份版直接显示已就绪。App 会显示私钥类型、证书主题与有效期，并检查私钥和证书是否匹配，相当于桌面版的 `inspect-identity`。完整的手动导入文件对优先；只导入一份时提示补齐，并继续使用内置身份（如有）。删除导入文件后恢复使用内置身份。
+4. **MFi 身份**：选择 `identity.pk8` 和 `certificate.p7b`（也可以选包含它们的 `.zip`，支持 PEM 格式私钥）。App 会显示私钥类型、证书主题与有效期，并检查私钥和证书是否匹配，相当于桌面版的 `inspect-identity`。完整的手动导入文件对优先；只导入一份时提示补齐。删除导入文件后回到「没有身份」的状态。由发布者另行分发的预置身份版会在这里直接显示已就绪，公开版没有预置身份。
 5. **配对 iPhone**：在 iPhone 上停留在「设置 → 蓝牙」页面，在 App 里搜索并配对，或改用系统蓝牙设置配对。App 会尝试检测 iPhone 的 iAP2 服务。
 6. **连接测试**：自动连接选中的 iPhone，逐项显示「蓝牙连接 → iAP2 链路 → 配件识别 → MFi 认证 → iPhone 请求定位」，失败时给出对应的处理办法。
 7. **iPhone 设置**：按步骤让 iPhone 改用 iap2loc 的定位；iPhone 开始请求定位后会实时显示已发送的条数。
@@ -84,7 +85,7 @@
 | 桌面版 | 安卓版 |
 | --- | --- |
 | `serve --port` | 设置 → 控制台 → 端口 |
-| `--identity` | 控制台「MFi密钥」留空时，优先使用引导或设置里完整导入的身份，否则使用 APK 内置身份（如有） |
+| `--identity` | 控制台「MFi密钥」留空时，优先使用引导或设置里完整导入的身份（公开版没有其他来源） |
 | `--fixed-identity` | 关闭「每次启动更换配件身份」 |
 | `--fixed-adapter` | 关闭「上报随机蓝牙地址」后用「手动填写地址」 |
 | `-v` / `--verbose` | 打开「详细协议日志」 |
@@ -94,7 +95,7 @@
 
 安卓不允许普通 App 读取本机蓝牙地址，所以默认上报一个随机生成并固定保存的地址（与桌面版的随机地址行为相同，iOS 接受改写后的地址）。
 
-配置与收藏保存在 App 私有目录的 `iap2loc.json`，格式与桌面版相同；手动导入的 MFi 身份保存在私有目录的 `identity/` 中。两者都不会被系统备份或换机迁移带走。内置身份保存在 APK 的 `assets/offline-mfi/` 中。
+配置与收藏保存在 App 私有目录的 `iap2loc.json`，格式与桌面版相同；手动导入的 MFi 身份保存在私有目录的 `identity/` 中。两者都不会被系统备份或换机迁移带走。
 
 ## 故障排查
 
@@ -152,20 +153,16 @@ bash ../scripts/smoke-android.sh app/build/outputs/apk/release/app-release.apk  
 
 本地构建时可以通过环境变量 `IAP2LOC_KEYSTORE`、`IAP2LOC_KEYSTORE_PASSWORD`、`IAP2LOC_KEY_ALIAS`、`IAP2LOC_KEY_PASSWORD` 使用自己的密钥。
 
-### 在 CI 中打包内置 MFi 身份
+### 关于「免导入」的预置身份版
 
-在仓库 Settings → Secrets and variables → Actions → Repository secrets 中，另外添加以下两项（与 APK 签名的四项 Secrets 用途不同）：
+公开仓库和它的 CI 不打包任何 MFi 材料，APK 里只有用户自己导入的身份：
 
-| Secret | 内容 |
-| --- | --- |
-| `MFI_IDENTITY_PK8_BASE64` | `base64 -w0 identity.pk8` 的完整输出；接受未加密的 PKCS#8 或 SEC1 DER 私钥 |
-| `MFI_CERTIFICATE_P7B_BASE64` | `base64 -w0 certificate.p7b` 的完整输出 |
+- 明文私钥（`assets/offline-mfi/identity.pk8`）随 APK 分发等于把身份公开，任何拿到安装包的人都能解压提取；
+- 公开仓库的 Actions Secrets 对拥有仓库写权限的人可见，把可分发的私钥放在这里没有意义。
 
-两项必须同时配置。CI 会先在内存中将私钥统一转换为未加密的 PKCS#8 DER（包括 SEC1 输入，密钥对不变），检查 P-256 曲线、PKCS#7 DER 证书链及二者匹配，再将规范化后的材料写入 runner 临时目录，通过 `IAP2LOC_MFI_ASSETS` 把 `offline-mfi/` 加入 Release assets；完成后清理临时目录。转换或校验失败会终止构建，不导出 assets 路径，不等待密码输入。此入口不接受 PEM，也不提供加密私钥的密码配置。密钥原文件不提交到 Git，也不会打印到构建日志。普通 push、Release 和手动构建可注入，PR 构建不会注入；两项都未配置时继续构建需手动导入身份的普通版，只配置一项或材料不匹配时构建失败。
-
-APK 文件名仍为 `iap2loc-android.apk`，签名与发布流程不变。App 优先使用控制台显式指定的身份目录，其次使用完整的手动导入文件对，最后使用完整的 APK 内置身份；不会混用不同来源的单个文件。只导入一份自定义文件时会持续提示缺失文件，并继续使用内置身份；普通版没有内置身份时仍可连接和识别，但无法完成认证。补齐两份文件后切换到导入身份，删除导入文件后恢复内置身份。显式指定的目录有误或完整导入文件对无法解析时会报错，不会静默切换来源。
-
-**内置身份会随 APK 分发，任何持有 APK 的人都可以解压提取。Secrets 仅保护构建前的材料；发布者应确认材料可再分发。** 本地构建也可将 `IAP2LOC_MFI_ASSETS` 指向包含 `offline-mfi/identity.pk8` 和 `offline-mfi/certificate.p7b` 的绝对目录；Debug 构建不打包这些文件。
+需要「装好就能用」的分发版本时，内置身份的打包、加密和分发在私有仓库完成：身份以加密容器内嵌，首次运行绑定本机，并带调试器与转发检测。
+私有构建会复用本仓库的源码和同一个签名密钥，产物名为 `iap2loc-android-bundled.apk`，与本仓库的 `iap2loc-android.apk` 并列发布。
+`android.yml` 在构建后会检查 APK 中不含 `identity.pk8`、`certificate.p7b` 或 `offline-mfi/`，防止明文打包被重新引入。
 
 ## 限制
 

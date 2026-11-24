@@ -11,8 +11,6 @@ on:
       - 'Protocol/**'
       - 'Web/**'
       - 'scripts/smoke-android.sh'
-      - 'scripts/prepare-android-mfi.py'
-      - 'scripts/test_prepare_android_mfi.py'
       - 'scripts/release.py'
       - 'scripts/test_release.py'
       - '.github/workflows/android.yml'
@@ -47,10 +45,6 @@ on:
       ANDROID_KEY_ALIAS:
         required: false
       ANDROID_KEY_PASSWORD:
-        required: false
-      MFI_IDENTITY_PK8_BASE64:
-        required: false
-      MFI_CERTIFICATE_P7B_BASE64:
         required: false
 
 permissions:
@@ -127,9 +121,6 @@ jobs:
           dotnet run --project android/tools/golden-vectors/GoldenVectors.csproj -c Release -- \
             vectors "$RUNNER_TEMP/csharp-vectors.json"
 
-      - name: Test MFi packaging with throwaway material
-        run: python3 -m unittest discover -s scripts -p 'test_prepare_android_mfi.py' -v
-
       - name: Unit tests
         working-directory: android
         run: IAP2LOC_GOLDEN_VECTORS="$RUNNER_TEMP/csharp-vectors.json" ./gradlew --no-daemon :core:test :app:testReleaseUnitTest
@@ -171,14 +162,6 @@ jobs:
             echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Prepare optional bundled MFi identity
-        # PR builds never receive the distributable identity.
-        if: github.event_name != 'pull_request'
-        env:
-          MFI_IDENTITY_PK8_BASE64: ${{ secrets.MFI_IDENTITY_PK8_BASE64 }}
-          MFI_CERTIFICATE_P7B_BASE64: ${{ secrets.MFI_CERTIFICATE_P7B_BASE64 }}
-        run: python3 scripts/prepare-android-mfi.py
-
       - name: Build the release APK and run lint
         working-directory: android
         shell: bash
@@ -196,6 +179,16 @@ jobs:
           mkdir -p ../out
           cp app/build/outputs/apk/release/app-release.apk ../out/iap2loc-android.apk
           cd ../out
+          # This build must never carry MFi material: the APK only works with an identity that
+          # the user imports. Distribution builds with an embedded identity belong to the private
+          # repository, which wraps it in its own container; a plaintext pk8 in assets is not an
+          # acceptable shortcut.
+          entries="$(unzip -Z1 iap2loc-android.apk)"
+          if grep -Eq '(^|/)(identity\.pk8|certificate\.p7b)$|(^|/)offline-mfi/' <<< "$entries"; then
+            echo 'the public APK must not contain MFi material' >&2
+            grep -E '(identity\.pk8|certificate\.p7b|offline-mfi)' <<< "$entries" >&2
+            exit 1
+          fi
           sha256sum iap2loc-android.apk > SHA256SUMS
           cat SHA256SUMS
           ls -l
@@ -203,10 +196,6 @@ jobs:
       - name: Remove the signing key
         if: always()
         run: rm -f "$RUNNER_TEMP/release.jks"
-
-      - name: Remove temporary MFi assets
-        if: always()
-        run: rm -rf "$RUNNER_TEMP/iap2loc-mfi-assets"
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4
