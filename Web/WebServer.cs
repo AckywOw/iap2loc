@@ -1,9 +1,11 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Iap2Loc.Engine;
 using Iap2Loc.Protocol;
 using Iap2Loc.Transport;
@@ -21,6 +23,34 @@ internal sealed class WebServer : IDisposable
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+
+    private static readonly HttpClient Http = CreateHttpClient();
+    private static readonly object NominatimGate = new();
+    private static DateTime _lastNominatim = DateTime.MinValue;
+
+    private static readonly (Regex Pattern, bool LatitudeFirst)[] GooglePatterns =
+    {
+        (new Regex(@"@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)", RegexOptions.Compiled), true),
+        (new Regex(@"[?&]q=(-?\d{1,2}\.\d+)(?:,|%2C)(-?\d{1,3}\.\d+)", RegexOptions.Compiled), true),
+        (new Regex(@"!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)", RegexOptions.Compiled), true),
+        (new Regex(@"[?&]ll=(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)", RegexOptions.Compiled), true),
+        (new Regex(@"\[null,null,(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)\]", RegexOptions.Compiled), true),
+    };
+
+    private static readonly (Regex Pattern, bool LatitudeFirst)[] AmapPatterns =
+    {
+        (new Regex(@"[?&]position=(-?\d{1,3}\.\d+),(-?\d{1,2}\.\d+)", RegexOptions.Compiled), false),
+        (new Regex(@"[?&]lng=(-?\d{1,3}\.\d+)[^\r\n]{0,80}?[?&]lat=(-?\d{1,2}\.\d+)", RegexOptions.Compiled), false),
+        (new Regex(@"[?&]location=(-?\d{1,3}\.\d+),(-?\d{1,2}\.\d+)", RegexOptions.Compiled), false),
+        (new Regex(@"""lng""\s*:\s*(-?\d+\.\d+)\s*,\s*""lat""\s*:\s*(-?\d+\.\d+)", RegexOptions.Compiled), false),
+    };
+
+    private static readonly (Regex Pattern, bool LatitudeFirst)[] BaiduPatterns =
+    {
+        (new Regex(@"[?&]latlng=(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)", RegexOptions.Compiled), true),
+        (new Regex(@"[?&]location=(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)", RegexOptions.Compiled), true),
+        (new Regex(@"""point""\s*:\s*\{\s*""x""\s*:\s*(-?\d+\.\d+)\s*,\s*""y""\s*:\s*(-?\d+\.\d+)", RegexOptions.Compiled), false),
     };
 
     private readonly TcpListener _listener;
@@ -159,6 +189,14 @@ internal sealed class WebServer : IDisposable
                         RespondJson(stream, LogSince(since));
                         return;
 
+                    case "/api/search":
+                        RespondJson(stream, SearchPlaces(query.TryGetValue("q", out var place) ? place : null));
+                        return;
+
+                    case "/api/link":
+                        RespondJson(stream, ResolveMapLink(query.TryGetValue("url", out var link) ? link : null));
+                        return;
+
                     default:
                         Respond(stream, 404, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("not found"));
                         return;
@@ -263,6 +301,244 @@ internal sealed class WebServer : IDisposable
     {
         var payload = Deserialize<IdPayload>(body);
         return payload?.Id is { } id ? new { ok = _favorites.Remove(id) } : new { ok = false };
+    }
+
+    private static object SearchPlaces(string? query)
+    {
+        var text = (query ?? string.Empty).Trim();
+        if (text.Length == 0)
+        {
+            return new { results = Array.Empty<object>(), error = "请输入要搜索的地点" };
+        }
+
+        if (text.Length > 120)
+        {
+            return new { results = Array.Empty<object>(), error = "关键词不能超过 120 个字符" };
+        }
+
+        var url = "https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=8" +
+                  "&accept-language=zh-CN,zh,en&q=" + Uri.EscapeDataString(text);
+
+        try
+        {
+            string body;
+            lock (NominatimGate)
+            {
+                var wait = 1000 - (int)(DateTime.UtcNow - _lastNominatim).TotalMilliseconds;
+                if (wait > 0)
+                {
+                    Thread.Sleep(wait);
+                }
+
+                _lastNominatim = DateTime.UtcNow;
+                using var response = Http.Send(new HttpRequestMessage(HttpMethod.Get, url));
+                if (!response.IsSuccessStatusCode)
+                {
+                    return new { results = Array.Empty<object>(), error = $"地理编码服务返回 {(int)response.StatusCode}" };
+                }
+
+                body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            }
+
+            using var document = JsonDocument.Parse(body);
+            var results = new List<object>();
+
+            foreach (var item in document.RootElement.EnumerateArray())
+            {
+                if (!TryReadCoordinate(item, "lat", "lon", out var latitude, out var longitude))
+                {
+                    continue;
+                }
+
+                var display = item.TryGetProperty("display_name", out var displayElement)
+                    ? displayElement.GetString() ?? string.Empty
+                    : string.Empty;
+                var name = item.TryGetProperty("name", out var nameElement) &&
+                           nameElement.ValueKind == JsonValueKind.String &&
+                           nameElement.GetString() is { Length: > 0 } value
+                    ? value
+                    : FirstPart(display);
+
+                results.Add(new { name, detail = display, latitude, longitude, crs = "wgs84" });
+                if (results.Count >= 8)
+                {
+                    break;
+                }
+            }
+
+            return new { results, error = (string?)null };
+        }
+        catch (Exception ex)
+        {
+            return new { results = Array.Empty<object>(), error = "搜索失败：" + ex.Message };
+        }
+    }
+
+    private static object ResolveMapLink(string? url)
+    {
+        var text = (url ?? string.Empty).Trim();
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return new { error = "请粘贴以 http(s):// 开头的地图链接" };
+        }
+
+        var provider = MapProvider(uri.Host);
+        if (provider is null)
+        {
+            return new { error = "只支持 Google、高德、百度地图的链接" };
+        }
+
+        try
+        {
+            using var response = Http.Send(new HttpRequestMessage(HttpMethod.Get, uri));
+            var final = response.RequestMessage?.RequestUri;
+            if (final is null || MapProvider(final.Host) != provider)
+            {
+                return new { error = "链接跳转到了不受支持的地图站点" };
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return new { error = $"地图站点返回 {(int)response.StatusCode}" };
+            }
+
+            if (TryExtractCoordinates(provider, final.ToString(), out var latitude, out var longitude))
+            {
+                return new { latitude, longitude, crs = CrsOf(provider), provider, finalUrl = final.ToString() };
+            }
+
+            using var source = response.Content.ReadAsStream();
+            var buffer = new byte[256 * 1024];
+            var read = source.Read(buffer, 0, buffer.Length);
+            var html = Encoding.UTF8.GetString(buffer, 0, read);
+            if (TryExtractCoordinates(provider, html, out latitude, out longitude))
+            {
+                return new { latitude, longitude, crs = CrsOf(provider), provider, finalUrl = final.ToString() };
+            }
+
+            return new { error = "链接里没有找到坐标，可能不是地点分享链接" };
+        }
+        catch (Exception ex)
+        {
+            return new { error = "解析链接失败：" + ex.Message };
+        }
+    }
+
+    private static bool TryExtractCoordinates(string provider, string text, out double latitude, out double longitude)
+    {
+        latitude = 0;
+        longitude = 0;
+
+        var patterns = provider switch
+        {
+            "google" => GooglePatterns,
+            "amap" => AmapPatterns,
+            _ => BaiduPatterns,
+        };
+
+        foreach (var (pattern, latitudeFirst) in patterns)
+        {
+            var match = pattern.Match(text);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            if (!double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var first) ||
+                !double.TryParse(match.Groups[2].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var second))
+            {
+                continue;
+            }
+
+            var candidateLatitude = latitudeFirst ? first : second;
+            var candidateLongitude = latitudeFirst ? second : first;
+            if (Math.Abs(candidateLatitude) > 90 || Math.Abs(candidateLongitude) > 180)
+            {
+                continue;
+            }
+
+            latitude = candidateLatitude;
+            longitude = candidateLongitude;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadCoordinate(JsonElement item, string latitudeKey, string longitudeKey, out double latitude, out double longitude)
+    {
+        latitude = 0;
+        longitude = 0;
+
+        if (!item.TryGetProperty(latitudeKey, out var latitudeElement) ||
+            !item.TryGetProperty(longitudeKey, out var longitudeElement))
+        {
+            return false;
+        }
+
+        return TryAsDouble(latitudeElement, out latitude) &&
+               TryAsDouble(longitudeElement, out longitude) &&
+               Math.Abs(latitude) <= 90 &&
+               Math.Abs(longitude) <= 180;
+    }
+
+    private static bool TryAsDouble(JsonElement element, out double value)
+    {
+        value = 0;
+        return element.ValueKind switch
+        {
+            JsonValueKind.Number => element.TryGetDouble(out value),
+            JsonValueKind.String => double.TryParse(element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value),
+            _ => false,
+        };
+    }
+
+    private static string FirstPart(string text)
+    {
+        var comma = text.IndexOf(',');
+        return comma > 0 ? text[..comma].Trim() : text.Trim();
+    }
+
+    private static string? MapProvider(string host)
+    {
+        var name = host.ToLowerInvariant();
+        if (IsHost(name, "goo.gl") || IsHost(name, "google.com") || IsHost(name, "google.com.hk"))
+        {
+            return "google";
+        }
+
+        if (IsHost(name, "amap.com"))
+        {
+            return "amap";
+        }
+
+        return IsHost(name, "baidu.com") ? "baidu" : null;
+    }
+
+    private static bool IsHost(string host, string domain) =>
+        host.Equals(domain, StringComparison.OrdinalIgnoreCase) ||
+        host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
+
+    private static string CrsOf(string provider) => provider switch
+    {
+        "amap" => "gcj02",
+        "baidu" => "bd09",
+        _ => "wgs84",
+    };
+
+    private static HttpClient CreateHttpClient()
+    {
+        var client = new HttpClient(new HttpClientHandler
+        {
+            AllowAutoRedirect = true,
+            AutomaticDecompression = DecompressionMethods.All,
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(10),
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("iap2loc/0.2 (+https://github.com/D1ngtalk/iap2loc)");
+        return client;
     }
 
     private object LogSince(long since)

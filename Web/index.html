@@ -75,6 +75,15 @@
     border-radius: 8px; margin-bottom: 6px; background: #fff; }
   .item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .item .sub { color: var(--muted); font-size: 11.5px; font-family: ui-monospace, Consolas, monospace; }
+  .place-results { display: none; border: 1px solid var(--line); border-radius: 9px; background: #fff;
+    overflow: auto; max-height: 220px; margin: 0 0 8px; }
+  .place-item { display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; cursor: pointer;
+    border-bottom: 1px solid var(--line); }
+  .place-item:last-child { border-bottom: 0; }
+  .place-item:hover { background: #f4f7fb; }
+  .place-item .name { font-size: 12.5px; }
+  .place-item .sub { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .place-empty { padding: 8px 9px; color: var(--muted); font-size: 12px; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: #cfcdc6; flex: none; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
   details { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; background: #fcfcfa; }
@@ -139,6 +148,12 @@
         <h2>目标<span class="grow"></span></h2>
         <p class="hint">点击地图选择位置或在下方填写坐标</p>
         <div class="seg" id="modes"></div>
+
+        <div class="row">
+          <input id="placeQuery" placeholder="搜索地点或粘贴地图链接" />
+          <button id="placeGo" class="mini">搜索</button>
+        </div>
+        <div id="placeResults" class="place-results"></div>
 
         <div class="panel" data-panel="point">
           <div class="row"><label>纬度</label><input id="lat" type="number" step="0.000001" /><label>经度</label><input id="lon" type="number" step="0.000001" /></div>
@@ -325,13 +340,17 @@ function initMap() {
 function addOnMap(lat, lon) {
   const [wLat, wLon] = S.datum === 'gcj' ? gcj2wgs(lat, lon) : [lat, lon];
   if (S.mode === 'path') {
-    S.route.forEach(point => { point.time = null; });
-    S.route.push({ lat: +clampLat(wLat).toFixed(6), lon: +wrapLon(wLon).toFixed(6), alt: null, time: null });
-    renderRoute();
-    markDirty();
+    addRoutePoint(wLat, wLon);
     return;
   }
   applyPicked(wLat, wLon);
+}
+
+function addRoutePoint(lat, lon) {
+  S.route.forEach(point => { point.time = null; });
+  S.route.push({ lat: +clampLat(lat).toFixed(6), lon: +wrapLon(lon).toFixed(6), alt: null, time: null });
+  renderRoute();
+  markDirty();
 }
 
 function applyPicked(lat, lon) {
@@ -591,6 +610,163 @@ function fitRoute() {
   if (!map || S.route.length < 2) return;
   map.fitBounds(L.latLngBounds(S.route.map(toLatLng)), { padding: [40, 40] });
 }
+
+/* ---------- place search ---------- */
+
+const BD_XPI = Math.PI * 3000 / 180;
+let placeBusy = false;
+
+function bd09ToGcj(lat, lon) {
+  const x = lon - 0.0065, y = lat - 0.006;
+  const z = Math.sqrt(x * x + y * y) - 0.00002 * Math.sin(y * BD_XPI);
+  const theta = Math.atan2(y, x) - 0.000003 * Math.cos(x * BD_XPI);
+  return [z * Math.sin(theta), z * Math.cos(theta)];
+}
+
+function toWgs84(lat, lon, crs) {
+  if (crs === 'gcj02') return gcj2wgs(lat, lon);
+  if (crs === 'bd09') {
+    const [gcjLat, gcjLon] = bd09ToGcj(lat, lon);
+    return gcj2wgs(gcjLat, gcjLon);
+  }
+  return [lat, lon];
+}
+
+function parseMapLink(text) {
+  const hostMatch = text.match(/^https?:\/\/([^/?#]+)/i);
+  if (!hostMatch) return null;
+  const host = hostMatch[1].toLowerCase();
+
+  const pick = (patterns, latitudeFirst, crs) => {
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (!match) continue;
+      const first = +match[1], second = +match[2];
+      if (!Number.isFinite(first) || !Number.isFinite(second)) continue;
+      const lat = latitudeFirst ? first : second;
+      const lon = latitudeFirst ? second : first;
+      if (Math.abs(lat) > 90 || Math.abs(lon) > 180) continue;
+      return { lat, lon, crs };
+    }
+    return null;
+  };
+
+  const hostIs = (domain) => host === domain || host.endsWith('.' + domain);
+
+  if (hostIs('goo.gl') || hostIs('google.com') || hostIs('google.com.hk')) {
+    return pick([
+      /@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/,
+      /[?&]q=(-?\d{1,2}\.\d+)(?:,|%2C)(-?\d{1,3}\.\d+)/,
+      /!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/,
+      /[?&]ll=(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/
+    ], true, 'wgs84');
+  }
+
+  if (hostIs('amap.com')) {
+    return pick([
+      /[?&]position=(-?\d{1,3}\.\d+),(-?\d{1,2}\.\d+)/,
+      /[?&]lng=(-?\d{1,3}\.\d+)[^\r\n]{0,80}?[?&]lat=(-?\d{1,2}\.\d+)/,
+      /[?&]location=(-?\d{1,3}\.\d+),(-?\d{1,2}\.\d+)/
+    ], false, 'gcj02');
+  }
+
+  if (hostIs('baidu.com')) {
+    return pick([
+      /[?&]latlng=(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/,
+      /[?&]location=(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/
+    ], true, 'bd09');
+  }
+
+  return null;
+}
+
+function hidePlaceResults() {
+  el('placeResults').style.display = 'none';
+}
+
+function showPlaceMessage(text) {
+  const box = el('placeResults');
+  box.innerHTML = '<div class="place-empty">' + escapeHtml(text) + '</div>';
+  box.style.display = 'block';
+}
+
+function renderPlaceResults(results) {
+  const box = el('placeResults');
+  box.innerHTML = '';
+  if (!results.length) { showPlaceMessage('没有找到匹配地点'); return; }
+
+  results.forEach(item => {
+    const row = document.createElement('div');
+    row.className = 'place-item';
+    row.innerHTML = '<span class="name">' + escapeHtml(item.name || '未命名') + '</span>' +
+      '<span class="sub">' + escapeHtml(item.detail || '') + '</span>';
+    row.addEventListener('click', () => usePlace(item.latitude, item.longitude, item.crs));
+    box.appendChild(row);
+  });
+  box.style.display = 'block';
+}
+
+function usePlace(lat, lon, crs) {
+  const [wLat, wLon] = toWgs84(lat, lon, crs || 'wgs84');
+  if (!Number.isFinite(wLat) || !Number.isFinite(wLon)) { showPlaceMessage('坐标无效'); return; }
+
+  if (S.mode === 'path') {
+    addRoutePoint(wLat, wLon);
+    notify('已添加路径点');
+  } else {
+    applyPicked(wLat, wLon);
+    notify('已填入坐标，点「应用修改」生效');
+  }
+
+  if (map) {
+    const [gLat, gLon] = S.datum === 'gcj' ? wgs2gcj(wLat, wLon) : [wLat, wLon];
+    map.setView([gLat, gLon], Math.max(map.getZoom(), 14));
+  }
+
+  hidePlaceResults();
+  el('placeQuery').value = '';
+}
+
+async function submitPlace() {
+  if (placeBusy) return;
+  const text = el('placeQuery').value.trim();
+  if (!text) return;
+
+  if (/^https?:\/\//i.test(text)) {
+    const parsed = parseMapLink(text);
+    if (parsed) { usePlace(parsed.lat, parsed.lon, parsed.crs); return; }
+
+    showPlaceMessage('解析中…');
+    const resolved = await getJson('/api/link?url=' + encodeURIComponent(text));
+    if (resolved && !resolved.error && Number.isFinite(resolved.latitude)) {
+      usePlace(resolved.latitude, resolved.longitude, resolved.crs);
+    } else {
+      showPlaceMessage((resolved && resolved.error) || '无法解析这个链接');
+    }
+    return;
+  }
+
+  placeBusy = true;
+  showPlaceMessage('搜索中…');
+  const data = await getJson('/api/search?q=' + encodeURIComponent(text));
+  placeBusy = false;
+
+  if (!data || data.error) {
+    showPlaceMessage((data && data.error) || '搜索失败');
+    return;
+  }
+
+  renderPlaceResults(data.results || []);
+}
+
+el('placeGo').addEventListener('click', submitPlace);
+el('placeQuery').addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); submitPlace(); }
+});
+document.addEventListener('click', event => {
+  if (event.target.closest('#placeResults') || event.target.closest('#placeQuery') || event.target === el('placeGo')) return;
+  hidePlaceResults();
+});
 
 /* ---------- inputs ---------- */
 
