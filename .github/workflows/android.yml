@@ -184,9 +184,9 @@ jobs:
           # repository, which wraps it in its own container; a plaintext pk8 in assets is not an
           # acceptable shortcut.
           entries="$(unzip -Z1 iap2loc-android.apk)"
-          if grep -Eq '(^|/)(identity\.pk8|certificate\.p7b)$|(^|/)offline-mfi/' <<< "$entries"; then
+          if grep -Eq '(^|/)(identity\.pk8|certificate\.p7b|identity\.enc)$|(^|/)offline-mfi/' <<< "$entries"; then
             echo 'the public APK must not contain MFi material' >&2
-            grep -E '(identity\.pk8|certificate\.p7b|offline-mfi)' <<< "$entries" >&2
+            grep -E '(identity\.pk8|certificate\.p7b|identity\.enc|offline-mfi)' <<< "$entries" >&2
             exit 1
           fi
           sha256sum iap2loc-android.apk > SHA256SUMS
