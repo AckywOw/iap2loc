@@ -139,7 +139,7 @@ git push origin v0.3.0
 | macOS | `iap2loc-macos-arm64.dmg`、`iap2loc-macos-x64.dmg` | `iap2loc-macos.sha256` |
 | Android | `iap2loc-android.apk` | `iap2loc-android.apk.sha256` |
 
-Android 发布需配置[四项 APK 签名 Secrets](README-Android.md#签名与-ci)；[两项 MFi Secrets](README-Android.md#在-ci-中打包内置-mfi-身份) 可选，决定是否内置 MFi 身份。发布使用仓库自带的 `GITHUB_TOKEN`，无需额外 PAT。配置自检和模拟发布测试在相关 PR 中运行，不使用真实身份或创建真实 Release。
+Android 发布需配置[四项 APK 签名 Secrets](README-Android.md#签名与-ci)；公开构建不打包 MFi 身份，用户在 App 内自行导入，需要「装好即用」的分发版由私有仓库产出。发布使用仓库自带的 `GITHUB_TOKEN`，无需额外 PAT。配置自检和模拟发布测试在相关 PR 中运行，不使用真实身份或创建真实 Release。
 
 如果环境、签名配置或上传临时失败，可在 Actions 中重跑失败的作业，也可在 **Release all platforms → Run workflow** 中填写已有标签重新构建。上传中断会保留草稿，重跑时补齐附件后发布；已公开且附件齐全时跳过重复发布，已公开但附件缺失时停止并要求人工处理。代码修复应创建新标签，不要移动已发布标签；Artifact 已过期时需重跑全部构建。
 
