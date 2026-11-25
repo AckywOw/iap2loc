@@ -422,7 +422,7 @@ internal static class Program
               --quality            GGA 定位质量 0-8（默认 1）
               --satellites         GGA 卫星数 0-99（默认 8）
               --rate               上报周期，毫秒（默认 250，最小 10）
-              --identity           identity.pk8 + certificate.p7b 所在目录（默认 ./identity）
+              --identity           identity.pk8 + certificate.p7b 所在目录（留空则不做 MFi 认证）
               --config             配置文件（默认 iap2loc.json，位于程序目录）
               --fixed-identity     不轮换配件身份（默认每次启动换一个 serial）
               --fixed-adapter      不随机蓝牙地址，上报本机适配器地址
